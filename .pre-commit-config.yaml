@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v2.2.1  # Use the latest stable version of autoflake
+    hooks:
+      - id: autoflake
+        args:
+          [
+            "--in-place",
+            "--remove-all-unused-imports",
+            "--remove-unused-variables",
+            "--ignore-init-module-imports",
+          ]
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.12.0  # Use the latest stable version of isort
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+
+  - repo: https://github.com/psf/black
+    rev: 23.9.1  # Use the latest stable version of Black
+    hooks:
+      - id: black
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 'v1.5.1'  # Use the latest stable version of mypy
+    hooks:
+      - id: mypy
