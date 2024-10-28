@@ -96,7 +96,7 @@ def create_guess_model(
 
     # Create the model dynamically with all fields
     return create_model(
-        model_name="CategoryGuess",
+        "CategoryGuess",
         __config__=model_config,
         **fields
     )  # type: ignore
