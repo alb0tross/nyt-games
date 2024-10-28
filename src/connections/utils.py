@@ -1,7 +1,7 @@
 from itertools import combinations
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, create_model, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 
 def parse_category_string(category: str) -> tuple[str, str, str, str]:
@@ -18,8 +18,7 @@ def parse_category_string(category: str) -> tuple[str, str, str, str]:
 
 
 def create_guess_model(
-    words: list[str],
-    previous_guesses: list[tuple[str, str, str, str]] | None = None
+    words: list[str], previous_guesses: list[tuple[str, str, str, str]] | None = None
 ) -> type[BaseModel]:
     """
     Create a Pydantic model for guessing categories based on available words and previous guesses.
@@ -51,7 +50,7 @@ def create_guess_model(
                 Field(
                     default=guess_str,
                     description=f"Previously guessed category {i}",
-                )
+                ),
             )
 
     # Add field for the next guess as an enum
@@ -62,8 +61,8 @@ def create_guess_model(
         Field(
             ...,
             description=f"Category guess {next_category_num}",
-            json_schema_extra=json_schema_extra_for_field
-        )
+            json_schema_extra=json_schema_extra_for_field,
+        ),
     )
 
     # Create properties dict for json schema
@@ -74,32 +73,25 @@ def create_guess_model(
             properties[f"category_{i}"] = {
                 "type": "string",
                 "description": f"Category {i}",
-                "enum": [",".join(prev_guess)]
+                "enum": [",".join(prev_guess)],
             }
 
     # Add property for next guess
     properties[f"category_{next_category_num}"] = {
         "type": "string",
         "description": f"Category {next_category_num}",
-        "enum": enum_values
+        "enum": enum_values,
     }
 
     json_schema_extra: dict[str, Any] = {
         "type": "object",
         "properties": properties,
-        "required": [f"category_{i}" for i in range(1, next_category_num + 1)]
+        "required": [f"category_{i}" for i in range(1, next_category_num + 1)],
     }
 
-    model_config = ConfigDict(
-        json_schema_extra=json_schema_extra
-    )
+    model_config = ConfigDict(json_schema_extra=json_schema_extra)
 
     # Create the model dynamically with all fields
     return create_model(
-        "CategoryGuess",
-        __config__=model_config,
-        **fields
+        "CategoryGuess", __config__=model_config, **fields
     )  # type: ignore
-
-
-

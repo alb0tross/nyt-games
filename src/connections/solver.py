@@ -10,7 +10,6 @@ from src.connections.models import DailyConnectionsSolution
 from src.connections.utils import create_guess_model, parse_category_string
 from src.llm_client import StructuredOutputLLMClient
 
-
 logger = structlog.get_logger(__name__)
 
 
@@ -67,9 +66,7 @@ class ConnectionsSolver:
         ]
 
         response = self.client.chat_completion_parsed(
-            messages=messages,
-            response_format=response_model,
-            model="gpt-4o-mini"
+            messages=messages, response_format=response_model, model="gpt-4o-mini"
         )
 
         # Get the current category number based on previous guesses
@@ -102,7 +99,9 @@ class ConnectionsSolver:
                 return True, solution.color, solution.theme
         return False, None, None
 
-    def solve(self, connections_puzzle: DailyConnections) -> DailyConnectionsSolution | None:
+    def solve(
+        self, connections_puzzle: DailyConnections
+    ) -> DailyConnectionsSolution | None:
         """
         Solve a DailyConnections puzzle using an LLM.
 
@@ -125,7 +124,7 @@ class ConnectionsSolver:
             guess = self._get_category_guess(
                 words=words,
                 correct_guesses=correct_guesses,
-                previous_incorrect=current_category_incorrect
+                previous_incorrect=current_category_incorrect,
             )
 
             is_correct, color, theme = self._check_guess(
@@ -153,7 +152,9 @@ class ConnectionsSolver:
                 )
 
                 if wrong_attempts >= 4:
-                    logger.info("Failed to solve puzzle: Maximum wrong attempts reached")
+                    logger.info(
+                        "Failed to solve puzzle: Maximum wrong attempts reached"
+                    )
                     return None
 
         solution = DailyConnectionsSolution(
