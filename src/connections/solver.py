@@ -1,5 +1,6 @@
 import structlog
 from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
@@ -37,6 +38,7 @@ class ConnectionsSolver:
         Pydantic.
         """
         self.client = client
+        self.action_messages: list[ChatCompletionMessageParam] = []
 
     def _get_category_guess(
         self,
@@ -58,7 +60,7 @@ class ConnectionsSolver:
             incorrect_guesses=previous_incorrect,
         )
 
-        messages: list[ChatCompletionMessageParam] = [
+        func_prompt_messages: list[ChatCompletionMessageParam] = [
             ChatCompletionSystemMessageParam(
                 role="system",
                 content=(
@@ -73,8 +75,18 @@ class ConnectionsSolver:
             ),
         ]
 
+        messages = (
+            func_prompt_messages[:1] + self.action_messages + func_prompt_messages[1:]
+        )
+
         response = self.client.chat_completion_parsed(
             messages=messages, response_format=response_model, model="gpt-4o-mini"
+        )
+
+        self.action_messages.append(
+            ChatCompletionAssistantMessageParam(
+                role="assistant", content=response.model_dump_json()
+            )
         )
 
         # Get the current category number based on previous guesses
@@ -120,7 +132,7 @@ class ConnectionsSolver:
             prior_guess=prior_guess, available_words=available_words
         )
 
-        messages: list[ChatCompletionMessageParam] = [
+        func_prompt_messages: list[ChatCompletionMessageParam] = [
             ChatCompletionSystemMessageParam(
                 role="system",
                 content=(
@@ -135,8 +147,18 @@ class ConnectionsSolver:
             ),
         ]
 
+        messages = (
+            func_prompt_messages[:1] + self.action_messages + func_prompt_messages[1:]
+        )
+
         response = self.client.chat_completion_parsed(
-            messages=messages, response_format=response_model, model="gpt-4o-mini"
+            messages=messages, response_format=response_model, model="gpt-4o"
+        )
+
+        self.action_messages.append(
+            ChatCompletionAssistantMessageParam(
+                role="assistant", content=response.model_dump_json()
+            )
         )
 
         word_list = list(prior_guess)
@@ -243,6 +265,13 @@ class ConnectionsSolver:
             )
 
             if is_correct:
+                self.action_messages.append(
+                    ChatCompletionUserMessageParam(
+                        role="user",
+                        content=f"You correctly identified the category {theme} using the words: {guess}!",
+                    )
+                )
+
                 correct_guesses.append(guess)
                 remaining_words = set(words)
                 for g in correct_guesses:
@@ -261,6 +290,13 @@ class ConnectionsSolver:
                 partial_match = self._check_for_partial_match(guess, connections_puzzle)
 
                 if partial_match:
+                    self.action_messages.append(
+                        ChatCompletionUserMessageParam(
+                            role="user",
+                            content=f"You almost found a category with {guess}! However, one word here doesn't belong"
+                            f"and you need to identify which word to replace it with to complete the category.",
+                        )
+                    )
                     correct_words, match_theme, match_color = partial_match
                     logger.info(
                         "Found partial match with 3 correct words",
@@ -273,6 +309,12 @@ class ConnectionsSolver:
                     current_theme = match_theme
                     last_guess = guess
                 else:
+                    self.action_messages.append(
+                        ChatCompletionUserMessageParam(
+                            role="user",
+                            content=f"Nope, the words: {guess} do not make up a valid category.",
+                        )
+                    )
                     # Regular wrong guess
                     revising_guess = False
                     current_theme = None
@@ -287,7 +329,8 @@ class ConnectionsSolver:
 
                 if wrong_attempts >= 4:
                     logger.warn(
-                        "Failed to solve puzzle: Maximum wrong attempts reached"
+                        "Failed to solve puzzle: Maximum wrong attempts reached",
+                        messages=self.action_messages,
                     )
                     return None
 
@@ -299,5 +342,8 @@ class ConnectionsSolver:
             category_4=correct_guesses[3],
         )
 
-        logger.info(f"Solution:\n{solution.model_dump_json(indent=2)}")
+        logger.info(
+            f"Solution:\n{solution.model_dump_json(indent=2)}",
+            messages=self.action_messages,
+        )
         return solution
