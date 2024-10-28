@@ -58,7 +58,7 @@ def create_guess_model(
         sample_combinations=possible_groups[:3] if possible_groups else [],
     )
 
-    # Remove any combinations that match incorrect guesses
+    # Remove any combinations that match prior incorrect guesses
     if incorrect_guesses:
         incorrect_sets = {frozenset(guess) for guess in incorrect_guesses}
         logger.debug(
@@ -78,7 +78,8 @@ def create_guess_model(
             removed_count=original_count - len(possible_groups),
         )
 
-    # Limit to 500 combinations after filtering
+    # todo. solution for approximating high value groups over hardcoded limit
+    # Limit to 500 combinations after filtering; limit of OpenAI's structured outputs feature
     if len(possible_groups) > 500:
         logger.info(
             "Limiting possible combinations to 500", original_count=len(possible_groups)
@@ -92,7 +93,6 @@ def create_guess_model(
         sample_values=enum_values[:3] if enum_values else [],
     )
 
-    # Create field definitions for the model
     fields: dict[str, tuple[Any, Any]] = {}
 
     # Add fields for correct guesses as string literals
@@ -127,10 +127,8 @@ def create_guess_model(
         possible_values_count=len(enum_values),
     )
 
-    # Create properties dict for json schema
     properties: dict[str, dict[str, Any]] = {}
     if correct_guesses:
-        # Add properties for correct guesses
         for i, prev_guess in enumerate(correct_guesses, 1):
             properties[f"category_{i}"] = {
                 "type": "string",
@@ -138,7 +136,6 @@ def create_guess_model(
                 "enum": [",".join(prev_guess)],
             }
 
-    # Add property for next guess
     properties[f"category_{next_category_num}"] = {
         "type": "string",
         "description": f"Category {next_category_num}",
@@ -159,7 +156,6 @@ def create_guess_model(
         category_count=next_category_num,
     )
 
-    # Create the model dynamically with all fields
     model = create_model("CategoryGuess", __config__=model_config, **fields)  # type: ignore
 
     logger.info(
@@ -169,3 +165,51 @@ def create_guess_model(
     )
 
     return model
+
+
+def create_revision_model(
+    prior_guess: tuple[str, str, str, str],
+    available_words: list[str],
+) -> type[BaseModel]:
+    """
+    Create a model for revising a guess that had 3 correct words.
+
+    :param prior_guess:
+    :param available_words:
+    :return:
+    """
+    # Create enum values for the prior guess words
+    prior_guess_enum: list[Any] = list(prior_guess)
+
+    # Create enum values for available replacement words
+    # Filter out words that were in the prior guess
+    replacement_words: list[Any] = [w for w in available_words if w not in prior_guess]
+
+    prior_guess_json_schema_extra: dict[str, Any] = {"enum": prior_guess_enum}
+    replacement_words_json_schema_extra: dict[str, Any] = {"enum": replacement_words}
+
+    return create_model(
+        "RevisePriorGuess",
+        prior_guess_word_to_replace=(
+            str,
+            Field(
+                ...,
+                description="Which word from the prior guess should be replaced",
+                json_schema_extra=prior_guess_json_schema_extra,
+            ),
+        ),
+        word_to_use_as_replacement=(
+            str,
+            Field(
+                ...,
+                description="Which available word should be used as the replacement",
+                json_schema_extra=replacement_words_json_schema_extra,
+            ),
+        ),
+        __config__=ConfigDict(
+            json_schema_extra={
+                "title": "Revise Prior Guess",
+                "description": "Model for revising a guess that had 3 correct words",
+            }
+        ),
+    )

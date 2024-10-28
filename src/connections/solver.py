@@ -7,7 +7,11 @@ from openai.types.chat import (
 
 from src.connections import DailyConnections
 from src.connections.models import DailyConnectionsSolution
-from src.connections.utils import create_guess_model, parse_category_string
+from src.connections.utils import (
+    create_guess_model,
+    create_revision_model,
+    parse_category_string,
+)
 from src.llm_client import StructuredOutputLLMClient
 
 logger = structlog.get_logger(__name__)
@@ -85,6 +89,70 @@ class ConnectionsSolver:
         category = getattr(response, category_field)
         return parse_category_string(category)
 
+    def _edit_category_guess(
+        self,
+        words: list[str],
+        prior_guess: tuple[str, str, str, str],
+        theme: str,
+        correct_guesses: list[tuple[str, str, str, str]] | None = None,
+    ) -> tuple[str, str, str, str]:
+        """
+        Get a revised category guess when 3 words were correct.
+
+        :param words: List of all available words.
+        :param prior_guess: The previous guess containing 3 correct words.
+        :param theme: The theme of the category that was partially guessed.
+        :param correct_guesses: List of previously correct guesses
+        :return: A new tuple of 4 words with one word replaced
+        """
+        used_words = set()
+        if correct_guesses:
+            used_words = {word for guess in correct_guesses for word in guess}
+
+        # Get available words (not used in correct guesses)
+        available_words = [w for w in words if w not in used_words]
+
+        response_model = create_revision_model(
+            prior_guess=prior_guess, available_words=available_words
+        )
+
+        messages: list[ChatCompletionMessageParam] = [
+            ChatCompletionSystemMessageParam(
+                role="system",
+                content=(
+                    "You are helping solve a Connections puzzle. The previous guess "
+                    f"had 3 correct words for the category '{theme}'. You need to "
+                    "identify which word was incorrect and replace it with a better match."
+                ),
+            ),
+            ChatCompletionUserMessageParam(
+                role="user",
+                content="Which word should be replaced and what should replace it?",
+            ),
+        ]
+
+        response = self.client.chat_completion_parsed(
+            messages=messages, response_format=response_model, model="gpt-4o-mini"
+        )
+
+        word_list = list(prior_guess)
+        if not hasattr(response, "prior_guess_word_to_replace") or not hasattr(
+            response, "word_to_use_as_replacement"
+        ):
+            raise RuntimeError("Invalid response when editing a prior incorrect guess.")
+
+        replace_idx = word_list.index(response.prior_guess_word_to_replace)
+        word_list[replace_idx] = response.word_to_use_as_replacement
+
+        logger.info(
+            "Editing category guess",
+            removed_word=response.prior_guess_word_to_replace,
+            replacement_word=response.word_to_use_as_replacement,
+            theme=theme,
+        )
+
+        return word_list[0], word_list[1], word_list[2], word_list[3]
+
     @staticmethod
     def _check_guess(
         guess: tuple[str, str, str, str],
@@ -103,18 +171,31 @@ class ConnectionsSolver:
                 return True, solution.color, solution.theme
         return False, None, None
 
+    @staticmethod
+    def _check_for_partial_match(
+        guess: tuple[str, str, str, str],
+        puzzle: DailyConnections,
+    ) -> tuple[set[str], str, str] | None:
+        """
+        Check if the guess contains exactly 3 correct words from any solution category.
+
+        :param guess: The guessed words to check
+        :param puzzle: The puzzle containing the solution.
+        :return: A tuple containing the set of correct words, the category theme, and category color if a partial match
+         is found; otherwise, None.
+        """
+        guess_set = set(guess)
+        for solution in puzzle.solutions:
+            common_words = guess_set.intersection(set(solution.words))
+            if len(common_words) == 3:
+                return common_words, solution.theme, solution.color
+        return None
+
     def solve(
         self, connections_puzzle: DailyConnections
     ) -> DailyConnectionsSolution | None:
         """
         Solve a DailyConnections puzzle using an LLM.
-
-        This method attempts to solve the puzzle by making successive guesses
-        for word categories using the LLM client. It maintains a list of previous guesses
-        to avoid repeating words and ensures that all words are used exactly once.
-
-        :param connections_puzzle: A DailyConnections instance holding the words and solution for the puzzle.
-        :return: A DailyConnectionsSolution instance with four unique groups of guesses for each category.
         """
         words = connections_puzzle.words
         logger.info(f"Solving daily connection with available words:\n{words}")
@@ -123,14 +204,29 @@ class ConnectionsSolver:
 
         current_category_incorrect: list[tuple[str, str, str, str]] = []
 
+        # Track if we're in revision mode
+        revising_guess = False
+        current_theme: str | None = None
+        last_guess: tuple[str, str, str, str] | None = None
+
         while len(correct_guesses) < 4 and wrong_attempts < 4:
             current_category = len(correct_guesses) + 1
 
-            guess = self._get_category_guess(
-                words=words,
-                correct_guesses=correct_guesses,
-                previous_incorrect=current_category_incorrect,
-            )
+            if revising_guess and last_guess and current_theme:
+                # Try to revise the guess with 3 correct words
+                guess = self._edit_category_guess(
+                    words=words,
+                    prior_guess=last_guess,
+                    theme=current_theme,
+                    correct_guesses=correct_guesses,
+                )
+            else:
+                # Make a regular guess
+                guess = self._get_category_guess(
+                    words=words,
+                    correct_guesses=correct_guesses,
+                    previous_incorrect=current_category_incorrect,
+                )
 
             is_correct, color, theme = self._check_guess(
                 guess=guess,
@@ -146,9 +242,33 @@ class ConnectionsSolver:
                     f"Correctly guessed {color} category: {theme}.\n"
                     f"Remaining words: {remaining_words}"
                 )
-                # Reset incorrect guesses for next category
+                # Reset states
                 current_category_incorrect = []
+                revising_guess = False
+                current_theme = None
+                last_guess = None
             else:
+                # Check for partial match (3 correct words)
+                partial_match = self._check_for_partial_match(guess, connections_puzzle)
+
+                if partial_match:
+                    correct_words, match_theme, match_color = partial_match
+                    logger.info(
+                        "Found partial match with 3 correct words",
+                        theme=match_theme,
+                        color=match_color,
+                        correct_words=list(correct_words),
+                    )
+                    # Enter revision mode
+                    revising_guess = True
+                    current_theme = match_theme
+                    last_guess = guess
+                else:
+                    # Regular wrong guess
+                    revising_guess = False
+                    current_theme = None
+                    last_guess = None
+
                 wrong_attempts += 1
                 current_category_incorrect.append(guess)
                 logger.warn(
@@ -162,6 +282,7 @@ class ConnectionsSolver:
                     )
                     return None
 
+        # Create solution from correct guesses
         solution = DailyConnectionsSolution(
             category_1=correct_guesses[0],
             category_2=correct_guesses[1],

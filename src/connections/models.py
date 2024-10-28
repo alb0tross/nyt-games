@@ -5,13 +5,17 @@ from pydantic_core.core_schema import FieldValidationInfo
 
 
 class CategoryColor(StrEnum):
-    YELLOW = "yellow"
-    GREEN = "green"
-    BLUE = "blue"
-    PURPLE = "purple"
+    """Enumeration of category colors in the Connections puzzle."""
+
+    YELLOW = "yellow"  # easiest
+    GREEN = "green"  # easy
+    BLUE = "blue"  # difficult
+    PURPLE = "purple"  # most difficult
 
 
 class CategorySolution(BaseModel):
+    """Model representing a category solution in the Connections puzzle."""
+
     color: CategoryColor
     theme: str
     words: list[str] = Field(..., min_length=4, max_length=4)
@@ -21,6 +25,8 @@ class CategorySolution(BaseModel):
 
 
 class DailyConnections(BaseModel):
+    """Model representing a daily Connections puzzle."""
+
     date: str
     words: list[str] = Field(..., min_length=16, max_length=16)
     solutions: list[CategorySolution] = Field(..., min_length=4, max_length=4)
