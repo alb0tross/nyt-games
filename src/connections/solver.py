@@ -48,7 +48,11 @@ class ConnectionsSolver:
         :param previous_incorrect: A list of tuples of words that were incorrect for this category.
         :return: A tuple of 4 words representing the next category guess.
         """
-        response_model = create_guess_model(words, correct_guesses)
+        response_model = create_guess_model(
+            words=words,
+            correct_guesses=correct_guesses,
+            incorrect_guesses=previous_incorrect,
+        )
 
         messages: list[ChatCompletionMessageParam] = [
             ChatCompletionSystemMessageParam(
@@ -113,6 +117,7 @@ class ConnectionsSolver:
         :return: A DailyConnectionsSolution instance with four unique groups of guesses for each category.
         """
         words = connections_puzzle.words
+        logger.info(f"Solving daily connection with available words:\n{words}")
         correct_guesses: list[tuple[str, str, str, str]] = []
         wrong_attempts = 0
 
@@ -146,13 +151,13 @@ class ConnectionsSolver:
             else:
                 wrong_attempts += 1
                 current_category_incorrect.append(guess)
-                logger.info(
+                logger.warn(
                     f"Incorrect guess number {wrong_attempts} for category {current_category}: "
                     f"{', '.join(guess)}."
                 )
 
                 if wrong_attempts >= 4:
-                    logger.info(
+                    logger.warn(
                         "Failed to solve puzzle: Maximum wrong attempts reached"
                     )
                     return None

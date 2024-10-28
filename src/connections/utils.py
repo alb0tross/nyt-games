@@ -1,7 +1,10 @@
 from itertools import combinations
 from typing import Any, Literal
 
+import structlog
 from pydantic import BaseModel, ConfigDict, Field, create_model
+
+logger = structlog.get_logger(__name__)
 
 
 def parse_category_string(category: str) -> tuple[str, str, str, str]:
@@ -18,32 +21,83 @@ def parse_category_string(category: str) -> tuple[str, str, str, str]:
 
 
 def create_guess_model(
-    words: list[str], previous_guesses: list[tuple[str, str, str, str]] | None = None
+    words: list[str],
+    correct_guesses: list[tuple[str, str, str, str]] | None = None,
+    incorrect_guesses: list[tuple[str, str, str, str]] | None = None,
 ) -> type[BaseModel]:
     """
     Create a Pydantic model for guessing categories based on available words and previous guesses.
 
     :param words: List of all words in the puzzle
-    :param previous_guesses: List of previously guessed word groups
+    :param correct_guesses: List of correctly guessed word groups
+    :param incorrect_guesses: List of incorrect guesses for current category
     :returns: A Pydantic model class with fields for all previous guesses plus the next guess
     """
-    # Filter out words that have been used in previous guesses
+    logger.info(
+        "Creating guess model",
+        total_words=len(words),
+        correct_guesses=len(correct_guesses) if correct_guesses else 0,
+        incorrect_guesses=len(incorrect_guesses) if incorrect_guesses else 0,
+    )
+
+    # Filter out words that have been used in correct guesses
     used_words = set()
-    if previous_guesses:
-        used_words = {word for guess in previous_guesses for word in guess}
+    if correct_guesses:
+        used_words = {word for guess in correct_guesses for word in guess}
+        logger.debug(
+            "Filtered out words from correct guesses", used_words=sorted(used_words)
+        )
 
     available_words = [w for w in words if w not in used_words]
 
-    # Generate possible combinations from remaining words (limited to 500)
-    possible_groups = list(combinations(sorted(available_words), 4))[:500]
+    # Generate all possible combinations
+    possible_groups = list(combinations(sorted(available_words), 4))
+    logger.debug(
+        "Generated initial combinations",
+        total_combinations=len(possible_groups),
+        sample_combinations=possible_groups[:3] if possible_groups else [],
+    )
+
+    # Remove any combinations that match incorrect guesses
+    if incorrect_guesses:
+        incorrect_sets = {frozenset(guess) for guess in incorrect_guesses}
+        logger.debug(
+            "Removing incorrect guesses",
+            incorrect_guesses=[",".join(guess) for guess in incorrect_guesses],
+            incorrect_count=len(incorrect_sets),
+        )
+
+        original_count = len(possible_groups)
+        possible_groups = [
+            group for group in possible_groups if frozenset(group) not in incorrect_sets
+        ]
+        logger.info(
+            "Filtered out incorrect combinations",
+            original_count=original_count,
+            remaining_count=len(possible_groups),
+            removed_count=original_count - len(possible_groups),
+        )
+
+    # Limit to 500 combinations after filtering
+    if len(possible_groups) > 500:
+        logger.info(
+            "Limiting possible combinations to 500", original_count=len(possible_groups)
+        )
+        possible_groups = possible_groups[:500]
+
     enum_values: list[str] = [",".join(group) for group in possible_groups]
+    logger.debug(
+        "Created enum values",
+        value_count=len(enum_values),
+        sample_values=enum_values[:3] if enum_values else [],
+    )
 
     # Create field definitions for the model
     fields: dict[str, tuple[Any, Any]] = {}
 
-    # Add fields for previous guesses as string literals of the exact prior guess
-    if previous_guesses:
-        for i, prev_guess in enumerate(previous_guesses, 1):
+    # Add fields for correct guesses as string literals
+    if correct_guesses:
+        for i, prev_guess in enumerate(correct_guesses, 1):
             guess_str = ",".join(prev_guess)
             fields[f"category_{i}"] = (
                 Literal[guess_str],  # type: ignore
@@ -52,9 +106,12 @@ def create_guess_model(
                     description=f"Previously guessed category {i}",
                 ),
             )
+            logger.debug(
+                "Added correct guess field", category_number=i, guess=guess_str
+            )
 
     # Add field for the next guess as an enum
-    next_category_num = len(previous_guesses) + 1 if previous_guesses else 1
+    next_category_num = len(correct_guesses) + 1 if correct_guesses else 1
     json_schema_extra_for_field: dict[str, Any] = {"enum": enum_values}
     fields[f"category_{next_category_num}"] = (
         str,
@@ -64,12 +121,17 @@ def create_guess_model(
             json_schema_extra=json_schema_extra_for_field,
         ),
     )
+    logger.debug(
+        "Added next guess field",
+        category_number=next_category_num,
+        possible_values_count=len(enum_values),
+    )
 
     # Create properties dict for json schema
     properties: dict[str, dict[str, Any]] = {}
-    if previous_guesses:
-        # Add properties for previous guesses
-        for i, prev_guess in enumerate(previous_guesses, 1):
+    if correct_guesses:
+        # Add properties for correct guesses
+        for i, prev_guess in enumerate(correct_guesses, 1):
             properties[f"category_{i}"] = {
                 "type": "string",
                 "description": f"Category {i}",
@@ -91,7 +153,19 @@ def create_guess_model(
 
     model_config = ConfigDict(json_schema_extra=json_schema_extra)
 
+    logger.info(
+        "Created model configuration",
+        field_count=len(fields),
+        category_count=next_category_num,
+    )
+
     # Create the model dynamically with all fields
-    return create_model(
-        "CategoryGuess", __config__=model_config, **fields
-    )  # type: ignore
+    model = create_model("CategoryGuess", __config__=model_config, **fields)  # type: ignore
+
+    logger.info(
+        "Model creation complete",
+        model_name=model.__name__,
+        field_count=len(model.model_fields),
+    )
+
+    return model
