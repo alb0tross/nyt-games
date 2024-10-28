@@ -1,3 +1,4 @@
+import structlog
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -8,6 +9,9 @@ from src.connections import DailyConnections
 from src.connections.models import DailyConnectionsSolution
 from src.connections.utils import create_guess_model, parse_category_string
 from src.llm_client import StructuredOutputLLMClient
+
+
+logger = structlog.get_logger(__name__)
 
 
 class ConnectionsSolver:
@@ -34,19 +38,18 @@ class ConnectionsSolver:
     def _get_category_guess(
         self,
         words: list[str],
-        previous_guesses: list[tuple[str, str, str, str]] | None = None,
+        correct_guesses: list[tuple[str, str, str, str]] | None = None,
+        previous_incorrect: list[tuple[str, str, str, str]] | None = None,
     ) -> tuple[str, str, str, str]:
         """
         Get a category guess from the LLM for the given words.
 
-        This method uses the LLM client to predict the next most likely group of 4 related words,
-        based on the given words and previous guesses.
-
         :param words: A list of words to guess.
-        :param previous_guesses: A list of tuples of words that have been previously guessed.
+        :param correct_guesses: A list of tuples of words that have been correctly guessed.
+        :param previous_incorrect: A list of tuples of words that were incorrect for this category.
         :return: A tuple of 4 words representing the next category guess.
         """
-        response_model = create_guess_model(words, previous_guesses)
+        response_model = create_guess_model(words, correct_guesses)
 
         messages: list[ChatCompletionMessageParam] = [
             ChatCompletionSystemMessageParam(
@@ -70,7 +73,7 @@ class ConnectionsSolver:
         )
 
         # Get the current category number based on previous guesses
-        category_num = len(previous_guesses) + 1 if previous_guesses else 1
+        category_num = len(correct_guesses) + 1 if correct_guesses else 1
         category_field = f"category_{category_num}"
 
         if not hasattr(response, category_field):
@@ -82,42 +85,24 @@ class ConnectionsSolver:
         return parse_category_string(category)
 
     @staticmethod
-    def _check_solution(
-        solution: DailyConnectionsSolution,
+    def _check_guess(
+        guess: tuple[str, str, str, str],
         puzzle: DailyConnections,
-    ) -> int:
+    ) -> tuple[bool, str | None, str | None]:
         """
-        Check the solution against the puzzle's actual solutions.
+        Check if a guess is correct and return the category details if it is.
 
-        This method compares the guessed categories with the actual solution categories
-        by matching sets of words, and counts how many categories are correctly identified.
-
-        :param solution: The generated solution to check.
-        :param puzzle: The original puzzle with correct solutions.
-        :return: Number of correct categories (0-4).
+        :param guess: The guessed words to check
+        :param puzzle: The puzzle containing the solutions
+        :return: Tuple of (is_correct, color, theme)
         """
-        correct_count = 0
-        solution_sets = {
-            frozenset(cat.words) for cat in puzzle.solutions
-        }
+        guess_set = frozenset(guess)
+        for solution in puzzle.solutions:
+            if frozenset(solution.words) == guess_set:
+                return True, solution.color, solution.theme
+        return False, None, None
 
-        # Check each category
-        for i in range(1, 5):
-            category = getattr(solution, f"category_{i}")
-            category_set = frozenset(category)
-
-            if category_set in solution_sets:
-                correct_count += 1
-                # Find the matching solution to get color and theme
-                for sol in puzzle.solutions:
-                    if frozenset(sol.words) == category_set:
-                        print(f"Found correct {sol.color.value} category: {sol.theme}")
-                        print(f"Words: {', '.join(category)}")
-                        break
-
-        return correct_count
-
-    def solve(self, connections_puzzle: DailyConnections) -> DailyConnectionsSolution:
+    def solve(self, connections_puzzle: DailyConnections) -> DailyConnectionsSolution | None:
         """
         Solve a DailyConnections puzzle using an LLM.
 
@@ -129,40 +114,54 @@ class ConnectionsSolver:
         :return: A DailyConnectionsSolution instance with four unique groups of guesses for each category.
         """
         words = connections_puzzle.words
-        previous_guesses: list[tuple[str, str, str, str]] = []
+        correct_guesses: list[tuple[str, str, str, str]] = []
+        wrong_attempts = 0
 
-        for guess_num in range(4):
-            try:
-                guess = self._get_category_guess(words, previous_guesses)
-                previous_guesses.append(guess)
-                print(f"Category {guess_num + 1}:", ", ".join(guess))
+        current_category_incorrect: list[tuple[str, str, str, str]] = []
 
-                # Verify words are still available
+        while len(correct_guesses) < 4 and wrong_attempts < 4:
+            current_category = len(correct_guesses) + 1
+
+            guess = self._get_category_guess(
+                words=words,
+                correct_guesses=correct_guesses,
+                previous_incorrect=current_category_incorrect
+            )
+
+            is_correct, color, theme = self._check_guess(
+                guess=guess,
+                puzzle=connections_puzzle,
+            )
+
+            if is_correct:
+                correct_guesses.append(guess)
                 remaining_words = set(words)
-                for g in previous_guesses:
+                for g in correct_guesses:
                     remaining_words -= set(g)
+                logger.info(
+                    f"Correctly guessed {color} category: {theme}.\n"
+                    f"Remaining words: {remaining_words}"
+                )
+                # Reset incorrect guesses for next category
+                current_category_incorrect = []
+            else:
+                wrong_attempts += 1
+                current_category_incorrect.append(guess)
+                logger.info(
+                    f"Incorrect guess number {wrong_attempts} for category {current_category}: "
+                    f"{', '.join(guess)}."
+                )
 
-                if len(remaining_words) < 4 and guess_num < 3:
-                    raise RuntimeError(
-                        f"Not enough remaining words after guess {guess_num + 1}. "
-                        f"Remaining: {remaining_words}"
-                    )
+                if wrong_attempts >= 4:
+                    logger.info("Failed to solve puzzle: Maximum wrong attempts reached")
+                    return None
 
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to make guess {guess_num + 1}: {str(e)}"
-                ) from e
-
-        # Convert guesses to solution
         solution = DailyConnectionsSolution(
-            category_1=previous_guesses[0],
-            category_2=previous_guesses[1],
-            category_3=previous_guesses[2],
-            category_4=previous_guesses[3],
+            category_1=correct_guesses[0],
+            category_2=correct_guesses[1],
+            category_3=correct_guesses[2],
+            category_4=correct_guesses[3],
         )
 
-        # Check and print results
-        correct_count = self._check_solution(solution, connections_puzzle)
-        print(f"\nFinal Score: {correct_count}/4 correct categories")
-
+        logger.info(f"Solution:\n{solution.model_dump_json(indent=2)}")
         return solution
