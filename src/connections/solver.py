@@ -87,6 +87,10 @@ class ConnectionsSolver:
             )
 
         category = getattr(response, category_field)
+        logger.info(
+            f"LLM guessed {category} explaining that: '{getattr(response, 'explanation')}'"
+        )
+
         return parse_category_string(category)
 
     def _edit_category_guess(
@@ -121,8 +125,8 @@ class ConnectionsSolver:
                 role="system",
                 content=(
                     "You are helping solve a Connections puzzle. The previous guess "
-                    f"had 3 correct words for the category '{theme}'. You need to "
-                    "identify which word was incorrect and replace it with a better match."
+                    f"had 3 correct words. You need to identify which word was incorrect and replace it with "
+                    f"a better match."
                 ),
             ),
             ChatCompletionUserMessageParam(
@@ -144,11 +148,16 @@ class ConnectionsSolver:
         replace_idx = word_list.index(response.prior_guess_word_to_replace)
         word_list[replace_idx] = response.word_to_use_as_replacement
 
+        explanation = getattr(response, "explanation", None)
+
         logger.info(
             "Editing category guess",
             removed_word=response.prior_guess_word_to_replace,
             replacement_word=response.word_to_use_as_replacement,
+            explanation=explanation,
             theme=theme,
+            response_model=response_model.model_fields,
+            response_json=response.model_dump_json(),
         )
 
         return word_list[0], word_list[1], word_list[2], word_list[3]

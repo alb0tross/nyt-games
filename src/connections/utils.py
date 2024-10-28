@@ -94,6 +94,7 @@ def create_guess_model(
     )
 
     fields: dict[str, tuple[Any, Any]] = {}
+    properties: dict[str, dict[str, Any]] = {}
 
     # Add fields for correct guesses as string literals
     if correct_guesses:
@@ -106,12 +107,34 @@ def create_guess_model(
                     description=f"Previously guessed category {i}",
                 ),
             )
-            logger.debug(
-                "Added correct guess field", category_number=i, guess=guess_str
-            )
+            properties[f"category_{i}"] = {
+                "type": "string",
+                "description": f"Category {i}",
+                "enum": [guess_str],
+            }
+
+    next_category_num = len(correct_guesses) + 1 if correct_guesses else 1
+
+    # Add explanation field for Chain of Thought reasoning
+    fields["explanation"] = (
+        str,
+        Field(
+            ...,
+            description=(
+                f"Explain your reasoning for category {next_category_num} guess. "
+                "What theme connects these words and why are you choosing them?"
+            ),
+        ),
+    )
+    properties["explanation"] = {
+        "type": "string",
+        "description": (
+            f"Explain your reasoning for category {next_category_num} guess. "
+            "What theme connects these words and why are you choosing them?"
+        ),
+    }
 
     # Add field for the next guess as an enum
-    next_category_num = len(correct_guesses) + 1 if correct_guesses else 1
     json_schema_extra_for_field: dict[str, Any] = {"enum": enum_values}
     fields[f"category_{next_category_num}"] = (
         str,
@@ -121,21 +144,6 @@ def create_guess_model(
             json_schema_extra=json_schema_extra_for_field,
         ),
     )
-    logger.debug(
-        "Added next guess field",
-        category_number=next_category_num,
-        possible_values_count=len(enum_values),
-    )
-
-    properties: dict[str, dict[str, Any]] = {}
-    if correct_guesses:
-        for i, prev_guess in enumerate(correct_guesses, 1):
-            properties[f"category_{i}"] = {
-                "type": "string",
-                "description": f"Category {i}",
-                "enum": [",".join(prev_guess)],
-            }
-
     properties[f"category_{next_category_num}"] = {
         "type": "string",
         "description": f"Category {next_category_num}",
@@ -145,24 +153,13 @@ def create_guess_model(
     json_schema_extra: dict[str, Any] = {
         "type": "object",
         "properties": properties,
-        "required": [f"category_{i}" for i in range(1, next_category_num + 1)],
+        "required": ["explanation"]
+        + [f"category_{i}" for i in range(1, next_category_num + 1)],
     }
 
     model_config = ConfigDict(json_schema_extra=json_schema_extra)
 
-    logger.info(
-        "Created model configuration",
-        field_count=len(fields),
-        category_count=next_category_num,
-    )
-
     model = create_model("CategoryGuess", __config__=model_config, **fields)  # type: ignore
-
-    logger.info(
-        "Model creation complete",
-        model_name=model.__name__,
-        field_count=len(model.model_fields),
-    )
 
     return model
 
@@ -190,6 +187,14 @@ def create_revision_model(
 
     return create_model(
         "RevisePriorGuess",
+        explanation=(
+            str,
+            Field(
+                ...,
+                description="An explanation of your logic behind the word replacement you are making. State which"
+                "word you are replacing and which word you are replacing it with and explain your reasoning.",
+            ),
+        ),
         prior_guess_word_to_replace=(
             str,
             Field(

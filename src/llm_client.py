@@ -88,5 +88,4 @@ class OpenAIClient(StructuredOutputLLMClient):
             messages=messages,
             response_format=response_format,
         )
-        print(f"Completion Message: ", completion.choices[0])
         return completion.choices[0].message.parsed
