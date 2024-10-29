@@ -164,6 +164,114 @@ def create_guess_model(
     return model
 
 
+def create_guess_word_model(
+    words: list[str],
+    word_number: int,
+    correct_guesses: list[tuple[str, str, str, str]] | None = None,
+    previous_selections: dict[str, str] | None = None,
+    previous_explanation: str | None = None,
+) -> type[BaseModel]:
+    """
+    Create a Pydantic model for selecting a single word from available options.
+    Includes previous selections as literal fields.
+
+    :param words: List of words that can be selected
+    :param word_number: Which word in the sequence (1-4) is being selected
+    :param correct_guesses: List of previously correct guesses
+    :param previous_selections: Dictionary of previous word selections {word_1: "first", word_2: "second", etc}
+    :param previous_explanation: The explanation provided with the first word selection
+    :return: A Pydantic model for selecting a single word
+    """
+    logger.info(
+        "Creating single word model",
+        total_words=len(words),
+        correct_guesses=len(correct_guesses) if correct_guesses else 0,
+    )
+
+    # Filter out words that have been used in correct guesses
+    used_words = set()
+    if correct_guesses:
+        used_words = {word for guess in correct_guesses for word in guess}
+        logger.debug(
+            "Filtered out words from correct guesses", used_words=sorted(used_words)
+        )
+
+    available_words = [w for w in words if w not in used_words]
+    logger.debug(
+        "Guessable words enum values",
+        value_count=len(available_words),
+        available_words=available_words,
+    )
+
+    fields: dict[str, tuple[Any, Any]] = {}
+    properties: dict[str, dict[str, Any]] = {}
+
+    # Add previous selections as literals
+    if previous_selections:
+        for i, (field_name, word) in enumerate(sorted(previous_selections.items()), 1):
+            fields[field_name] = (
+                Literal[word],  # type: ignore
+                Field(
+                    default=word,
+                    description=f"Previously selected word #{i}",
+                ),
+            )
+            properties[field_name] = {
+                "type": "string",
+                "description": f"Word #{i}",
+                "enum": [word],
+            }
+
+    fields["explanation"] = (
+        str,
+        Field(
+            ...,
+            description=(
+                "Explain your reasoning for this category. "
+                "What theme connects these words and why are you choosing them?"
+            ),
+        ),
+    )
+    properties["explanation"] = {
+        "type": "string",
+        "description": (
+            "Explain your reasoning for this category. "
+            "What theme connects these words and why are you choosing them?"
+        ),
+    }
+
+    # Add new word selection field
+    word_field_schema: dict[str, Any] = {
+        "type": "string",
+        "description": f"Word #{word_number}",
+        "enum": sorted(available_words),
+    }
+    fields[f"word_{word_number}"] = (
+        str,
+        Field(
+            ...,
+            description=f"Select word #{word_number} that belongs in this category",
+            json_schema_extra=word_field_schema,
+        ),
+    )
+    properties[f"word_{word_number}"] = {
+        "type": "string",
+        "description": f"Word #{word_number}",
+        "enum": sorted(available_words),
+    }
+
+    json_schema_extra: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+    }
+
+    model_config = ConfigDict(json_schema_extra=json_schema_extra)
+
+    return create_model(
+        f"WordSelection_{word_number}", __config__=model_config, **fields
+    )  # type: ignore
+
+
 def create_revision_model(
     prior_guess: tuple[str, str, str, str],
     available_words: list[str],

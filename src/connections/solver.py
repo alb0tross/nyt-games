@@ -10,6 +10,7 @@ from src.connections import DailyConnections
 from src.connections.models import DailyConnectionsSolution
 from src.connections.utils import (
     create_guess_model,
+    create_guess_word_model,
     create_revision_model,
     parse_category_string,
 )
@@ -104,6 +105,98 @@ class ConnectionsSolver:
         )
 
         return parse_category_string(category)
+
+    def _get_category_by_word_guess(
+        self,
+        words: list[str],
+        correct_guesses: list[tuple[str, str, str, str]] | None = None,
+    ) -> tuple[str, str, str, str]:
+        """
+        Get a category guess from the LLM for the given words by selecting one word at a time.
+
+        :param words: A list of words to guess.
+        :param correct_guesses: A list of tuples of words that have been correctly guessed.
+        :return: A tuple of 4 words representing the next category guess.
+        """
+        available_words = words.copy()
+        selected_words: dict[str, str] = {}
+        explanation: str | None = None
+
+        # Base system message that stays constant
+        base_system_message = ChatCompletionSystemMessageParam(
+            role="system",
+            content=(
+                "You are solving a Connections puzzle. You need to identify groups "
+                "of 4 related words. Each group should have a clear theme "
+                "connecting all words. Select one word at a time to build your category."
+            ),
+        )
+
+        # Select words one at a time
+        for word_number in range(1, 5):
+            # Create model for current word selection
+            response_model = create_guess_word_model(
+                words=available_words,
+                word_number=word_number,
+                correct_guesses=correct_guesses,
+                previous_selections=selected_words if selected_words else None,
+                previous_explanation=explanation,
+            )
+
+            # Create appropriate user message based on progress
+            if word_number == 1:
+                user_content = (
+                    "Select the first word for a new category and explain the theme "
+                    "you are building."
+                )
+            else:
+                selected_words_str = ", ".join(selected_words.values())
+                user_content = (
+                    f"You've selected: {selected_words_str}. "
+                    f"Select word #{word_number} that matches your theme: {explanation}"
+                )
+
+            messages: list[ChatCompletionMessageParam] = [
+                base_system_message,
+                *self.action_messages,
+                ChatCompletionUserMessageParam(role="user", content=user_content),
+            ]
+
+            # Get response for this word
+            response = self.client.chat_completion_parsed(
+                messages=messages, response_format=response_model, model="gpt-4o"
+            )
+
+            # Save the response
+            self.action_messages.append(
+                ChatCompletionAssistantMessageParam(
+                    role="assistant", content=response.model_dump_json()
+                )
+            )
+
+            # Extract the selected word
+            word_field = f"word_{word_number}"
+            selected_word = getattr(response, word_field)
+
+            # Store the word and remove it from available words
+            selected_words[word_field] = selected_word
+            available_words.remove(selected_word)
+
+            explanation = getattr(response, "explanation")
+            logger.info(f"Building category with theme: {explanation}")
+
+            logger.info(f"Selected word {word_number}: {selected_word}")
+
+        # Convert dictionary to tuple maintaining order
+        final_words = tuple(selected_words[f"word_{i}"] for i in range(1, 5))
+
+        logger.info(
+            "Completed category guess",
+            selected_words=final_words,
+            explanation=explanation,
+        )
+
+        return final_words  # type: ignore
 
     def _edit_category_guess(
         self,
@@ -253,10 +346,13 @@ class ConnectionsSolver:
                 )
             else:
                 # Make a regular guess
-                guess = self._get_category_guess(
-                    words=words,
-                    correct_guesses=correct_guesses,
-                    previous_incorrect=current_category_incorrect,
+                # guess = self._get_category_guess(
+                #     words=words,
+                #     correct_guesses=correct_guesses,
+                #     previous_incorrect=current_category_incorrect,
+                # )
+                guess = self._get_category_by_word_guess(
+                    words=words, correct_guesses=correct_guesses
                 )
 
             is_correct, color, theme = self._check_guess(
